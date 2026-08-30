@@ -4,7 +4,7 @@
 
 一个**单文件 HTML** 番茄时钟：53KB、零依赖、零后端、离线可用，数据只存在你自己的浏览器里。
 
-- 🌐 在线体验：https://8f84cc8a29094870b7c293a19839b873.app.workbuddy.link
+- 🌐 在线体验：https://zhangy2026.github.io/focus-recipe/
 - 📄 产品规格（契约驱动的唯一权威依据）：[docs/SPEC.md](docs/SPEC.md)
 
 ![桌面端截图](docs/screenshot-desktop.png)
