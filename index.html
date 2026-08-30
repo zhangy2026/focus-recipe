@@ -155,6 +155,15 @@ details.set summary:hover{color:var(--text)}
 .setrow h4 i{width:7px;height:7px;border-radius:50%}
 .setrow label{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;color:var(--text2);margin-bottom:6px}
 .setrow input[type=number]{width:62px;min-height:32px;padding:3px 6px;border:1px solid var(--line2);border-radius:6px;background:var(--panel);text-align:center;font-variant-numeric:tabular-nums}
+.custadd{margin-top:16px;border-top:1px dashed var(--line);padding-top:12px}
+.custadd h3{font-size:13px;font-weight:600;margin-bottom:8px}
+.custform{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.custform input[type=text]{width:118px;min-height:32px;padding:4px 8px;border:1px solid var(--line2);border-radius:6px;background:var(--panel)}
+.custform label{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text2)}
+.custform input[type=number]{width:56px;min-height:32px;padding:3px 6px;border:1px solid var(--line2);border-radius:6px;background:var(--panel);text-align:center}
+.cdel{margin-left:auto;border:none;background:none;color:var(--text2);cursor:pointer;font-size:12px;min-height:32px;padding:2px 8px}
+.cdel:hover{color:#c0392b}
+.btn:disabled{opacity:.45;cursor:not-allowed}
 .opts{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;align-items:center}
 /* NFR-4：可点区域不低于 32px 高 */
 .sw{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--text2);cursor:pointer;min-height:32px}
@@ -205,7 +214,7 @@ dialog textarea:focus,dialog input:focus{outline:none;border-color:var(--accent)
   .ctrls .btn{padding:11px 18px;flex:1 1 auto;min-width:96px}
   .top-in{flex-wrap:wrap;gap:8px}
   .brand h1{font-size:15px}
-  dialog textarea,dialog input[type=text],.setrow input[type=number]{font-size:16px}
+  dialog textarea,dialog input[type=text],.setrow input[type=number],.custform input{font-size:16px}
   .bar{grid-template-columns:64px 1fr 48px;gap:8px}
   /* 弹窗里的按钮是主操作，桌面端 36.8px 在手机上按不准，补到 46px */
   .dact .btn{padding:12px 18px;flex:1 1 auto}
@@ -259,6 +268,18 @@ dialog textarea:focus,dialog input:focus{outline:none;border-color:var(--accent)
       <details class="set">
         <summary>配方设置 · 通知 · 数据</summary>
         <div class="setgrid" id="setgrid"></div>
+        <div class="custadd">
+          <h3>自定义任务 <span class="hint" id="cuCount">0/5</span></h3>
+          <div class="custform">
+            <input type="text" id="cuName" maxlength="8" placeholder="名称（1–8 字）" aria-label="自定义任务名称">
+            <label>专注<input type="number" id="cuFocus" value="25" min="1" max="600" inputmode="numeric"></label>
+            <label>短休<input type="number" id="cuShort" value="5" min="1" max="600" inputmode="numeric"></label>
+            <label>长休<input type="number" id="cuLong" value="15" min="1" max="600" inputmode="numeric"></label>
+            <label>几轮长休<input type="number" id="cuEvery" value="4" min="1" max="12" inputmode="numeric"></label>
+            <button type="button" class="btn sm" id="btnCuAdd">＋ 添加</button>
+          </div>
+          <p class="hint" style="margin:6px 0 0">自定义类别和内置类别一样计时、统计、上分享卡片；最多 5 种。纯计时请用内置「会议沟通」。</p>
+        </div>
         <div class="opts">
           <label class="sw"><input type="checkbox" id="optSound" checked>提示音</label>
           <label class="sw"><input type="checkbox" id="optNotify">桌面通知</label>
@@ -351,6 +372,11 @@ var BREAK_KINDS = [
   {k:"int", label:"内部走神"},
   {k:"act", label:"主动暂停"}
 ];
+/* FR-11：自定义类别（每人最多 5 种）。有效配方 = 内置 PRESETS ∪ S.custom。
+   注意：sanitize 在 var S = load() 期间运行， CUSTOM_MAX/CUSTOM_COLORS 必须在 load 之前完成赋值，
+   所以不能挪到下方 helpers 块里（函数声明有提升可以待在后面， var 赋值不行）。 */
+var CUSTOM_MAX = 5;
+var CUSTOM_COLORS = ["#0f9d8f","#c24898","#5c7a99","#8a63d2","#b3324f"];   // 与内置 5 色色相全部错开
 var KEY = "focus-recipe-v1";
 
 var S = load();
@@ -376,15 +402,62 @@ function isArr(v){ return Object.prototype.toString.call(v) === "[object Array]"
 function isObj(v){ return !!v && typeof v === "object" && !isArr(v); }
 
 /* 白名单必须用 hasOwnProperty：PRESETS["__proto__"] 会拿到 Object.prototype（是对象），
-   直接 typeof/isObj 判断会放行 "__proto__" 这种伪类别 */
-function isCat(k){ return Object.prototype.hasOwnProperty.call(PRESETS, k); }
+   直接 typeof/isObj 判断会放行 "__proto__" 这种伪类别。
+   运行时 isCat = 内置 ∪ 自定义；注意 sanitize 在 S 就绪前运行，用自己的本地集合，不走这里。 */
+function isCat(k){ return Object.prototype.hasOwnProperty.call(PRESETS, k) || !!customDef(k); }
+
+/* FR-11  helpers：颜色混合、自定义查找、有效配方合成。 */
+function mix(hex, w){   // 向白色混 w 比例求浅色（暗色主题用的 rawD，自定义色没有预置值，现算）
+  var n = parseInt(hex.slice(1), 16), r = n >> 16, g = (n >> 8) & 255, b = n & 255;
+  r = Math.round(r + (255 - r) * w); g = Math.round(g + (255 - g) * w); b = Math.round(b + (255 - b) * w);
+  return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+}
+function customDef(k){
+  if(typeof S === "undefined" || !S || !isArr(S.custom)) return null;
+  for(var i = 0; i < S.custom.length; i++) if(S.custom[i].id === k) return S.custom[i];
+  return null;
+}
+function effOrder(){ return ORDER.concat((S.custom || []).map(function(e){ return e.id; })); }
+function pdef(k){
+  if(Object.prototype.hasOwnProperty.call(PRESETS, k)) return PRESETS[k];
+  var e = customDef(k);
+  if(!e) return null;
+  return {name:e.name, desc:"自定义", focus:e.focus, short:e.short, long:e.long, every:e.every,
+          color:e.color, raw:e.color, rawD:mix(e.color, 0.6), resume:"continue", rest:"喝口水，接着来", countup:false};
+}
+/* 已删除类别的兜底：统计/分享卡片里的历史记录用它渲染，灰色、无配方 */
+var GONE = {name:"（已删除类别）", desc:"", color:"#9d9c95", raw:"#9d9c95", rawD:"#c9c9c4", focus:0, short:0, long:0, every:4, resume:"continue", rest:"", countup:false};
+function pdefFb(k){ return pdef(k) || GONE; }
 
 function defaults(){
-  var s = {sessions:[],cats:{},opts:{sound:true,notify:false,title:true,theme:"light"},lastCat:"deep",nextAction:null};
+  var s = {sessions:[],cats:{},custom:[],opts:{sound:true,notify:false,title:true,theme:"light"},lastCat:"deep",nextAction:null};
   ORDER.forEach(function(k){
     s.cats[k] = {focus:PRESETS[k].focus, short:PRESETS[k].short, long:PRESETS[k].long, every:PRESETS[k].every};
   });
   return s;
+}
+
+/* FR-11.6：自定义类别的清洗。id 必须匹配 ^u[a-z0-9]{4,12}$（永不为内置键，__proto__ 型注入必拒），
+   重名 id 丢、超过 5 条丢、空名丢、颜色非 hex 换色板、时长钳区间。 */
+function sanitizeCustom(v){
+  var out = [];
+  if(!isArr(v)) return out;
+  v.forEach(function(x){
+    if(out.length >= CUSTOM_MAX || !isObj(x)) return;
+    var id = (typeof x.id === "string" && /^u[a-z0-9]{4,12}$/.test(x.id)) ? x.id : "";
+    if(!id || out.some(function(e){ return e.id === id; })) return;
+    var name = (typeof x.name === "string") ? [...x.name.trim()].slice(0,8).join("") : "";
+    if(!name) return;
+    out.push({
+      id: id, name: name,
+      focus: Math.max(1, Math.min(600, num(x.focus, 25))),
+      short: Math.max(1, Math.min(600, num(x.short, 5))),
+      long:  Math.max(1, Math.min(600, num(x.long, 15))),
+      every: Math.max(1, Math.min(12, num(x.every, 4))),
+      color: /^#[0-9a-fA-F]{6}$/.test(x.color || "") ? x.color : CUSTOM_COLORS[out.length % CUSTOM_COLORS.length]
+    });
+  });
+  return out;
 }
 
 /* FR-8.3：任何进入状态的外部数据（localStorage、导入的 JSON）都必须过这一层。
@@ -393,6 +466,12 @@ function defaults(){
 function sanitize(d){
   var s = defaults();
   if(!isObj(d)) return s;
+
+  // 先洗自定义类别，得到本地合法 id 集合——sessions/lastCat/nextAction 的类别白名单 = 内置 ∪ 它
+  s.custom = sanitizeCustom(d.custom);
+  var customIds = {};
+  s.custom.forEach(function(e){ customIds[e.id] = 1; });
+  function okCat(k){ return Object.prototype.hasOwnProperty.call(PRESETS, k) || customIds[k] === 1; }
 
   if(isArr(d.sessions)){
     s.sessions = d.sessions.filter(isObj).map(function(x){
@@ -411,7 +490,10 @@ function sanitize(d){
         });
       }
       return {
-        cat:     isCat(x.cat) ? x.cat : "deep",
+        /* FR-11.5 修正（审计 P1-1）：历史记录的 cat 放行「形态合法但已删除」的自定义 id，
+           否则每次加载都会把死 id 改写成 deep——灰条被吞、分钟数并错类别，save 后污染持久化。
+           渲染侧由 pdefFb 的 GONE 灰色兜底，数据原样保留。 */
+        cat:     (okCat(x.cat) || /^u[a-z0-9]{4,12}$/.test(x.cat || "")) ? x.cat : "deep",
         at:      at,
         planned: Math.max(0, Math.min(600,  num(x.planned, 0))),
         actual:  Math.max(0, Math.min(1440, num(x.actual,  0))),
@@ -443,12 +525,12 @@ function sanitize(d){
     theme:  (o.theme === "dark") ? "dark" : "light"
   };
 
-  s.lastCat = isCat(d.lastCat) ? d.lastCat : "deep";
+  s.lastCat = okCat(d.lastCat) ? d.lastCat : "deep";
 
   if(isObj(d.nextAction) && typeof d.nextAction.text === "string" && d.nextAction.text.trim()){
     var na = parseInt(d.nextAction.at,10);
     s.nextAction = {
-      cat:  isCat(d.nextAction.cat) ? d.nextAction.cat : "deep",
+      cat:  (okCat(d.nextAction.cat) || /^u[a-z0-9]{4,12}$/.test(d.nextAction.cat || "")) ? d.nextAction.cat : "deep",
       text: d.nextAction.text.slice(0,200),
       at:   (isFinite(na) && na >= 0) ? na : Date.now()
     };
@@ -497,8 +579,13 @@ function askNotify(){
     if(r && typeof r.catch === "function") r.catch(function(){});
   }catch(e){}
 }
-function cfg(k){ return S.cats[k] || S.cats.deep; }
-function isCountup(){ return !!PRESETS[cur].countup; }
+function cfg(k){
+  if(S.cats[k]) return S.cats[k];       // 内置类别：用户覆盖层
+  var e = customDef(k);
+  if(e) return e;                        // 自定义类别：时长就存在条目里，改它即写回
+  return S.cats.deep;
+}
+function isCountup(){ var d = pdef(cur); return !!(d && d.countup); }
 
 function phaseLen(p){
   var c = cfg(cur);
@@ -526,15 +613,17 @@ function toast(t){
 
 function renderCats(){
   var box = $("cats"); box.innerHTML = "";
-  ORDER.forEach(function(k){
-    var p = PRESETS[k], c = cfg(k);
+  effOrder().forEach(function(k){
+    var p = pdef(k), c = cfg(k);
+    if(!p) return;
     var d = document.createElement("div");
     d.className = "cat";
     d.setAttribute("data-on", k===cur ? "1" : "0");
     if(running && k!==cur) d.setAttribute("data-locked","1");
     var plan = p.countup ? "纯计时" : (c.focus+"/"+c.short+(c.long?(" · "+c.every+"轮长休"+c.long):""));
-    d.innerHTML = '<span class="cn"><i class="dot" style="background:'+p.color+'"></i>'+p.name+'</span>'+
-                  '<span class="cd">'+p.desc+'</span><span class="cp">'+plan+'</span>';
+    // FR-11.7：自定义名称/描述是用户输入，进 innerHTML 前必须 esc
+    d.innerHTML = '<span class="cn"><i class="dot" style="background:'+p.color+'"></i>'+esc(p.name)+'</span>'+
+                  '<span class="cd">'+esc(p.desc)+'</span><span class="cp">'+plan+'</span>';
     d.onclick = function(){
       if(running && k!==cur){ toast("正在计时，先暂停再换类别"); return; }
       cur = k; S.lastCat = k; save();
@@ -567,7 +656,7 @@ function renderDots(){
 }
 
 function renderRing(){
-  var p = PRESETS[cur];
+  var p = pdef(cur);
   var C = 2*Math.PI*104;
   var rf = $("rf");
   rf.style.strokeDasharray = C;
@@ -592,7 +681,7 @@ function renderRing(){
 }
 
 function renderTip(){
-  var p = PRESETS[cur];
+  var p = pdef(cur);
   var txt;
   if(isCountup()) txt = "会议模式：只累计时长，不计番茄。点「跳过本段」结束并记录。";
   else if(phase === "focus") txt = "休息处方：<b>"+p.rest+"</b>";
@@ -609,7 +698,7 @@ function resetPhase(){
   lastTitleSec = -1;
   renderRing(); renderTip(); renderDots();
   $("btnStart").textContent = "开始";
-  if($("optTitle").checked) document.title = "专注配方 · "+PRESETS[cur].name;
+  if($("optTitle").checked) document.title = "专注配方 · "+pdef(cur).name;
 }
 
 function start(){
@@ -674,7 +763,7 @@ function complete(){
   stop();
   beep(phase === "focus" ? 0 : 1);
   notify(phase === "focus" ? "番茄完成" : "休息结束",
-         phase === "focus" ? "去休息一下："+PRESETS[cur].rest : "准备开始下一个番茄");
+         phase === "focus" ? "去休息一下："+pdef(cur).rest : "准备开始下一个番茄");
 
   if(isCountup()){
     var mins = Math.round(elapsedMs/60000);
@@ -688,7 +777,7 @@ function complete(){
   if(phase === "focus"){
     pendingActual = Math.round(curPlanMs/60000);
     pendingStart = Date.now() - curPlanMs;
-    $("finSub").textContent = PRESETS[cur].rest + "。先花 5 秒写下下一步的第一个动作，下次打开它就在屏幕上。";
+    $("finSub").textContent = pdef(cur).rest + "。先花 5 秒写下下一步的第一个动作，下次打开它就在屏幕上。";
     $("finText").value = "";
     // 必须在弹窗打开之前置位：close 事件是异步派发的，晚一步就会被判成「尚未入账」
     finishPending = true;
@@ -737,10 +826,10 @@ function renderBrChips(){
     d.onclick = function(){ brKind = b.k; renderBrChips(); };
     box.appendChild(d);
   });
-  $("brNote").textContent = PRESETS[cur].resume === "restart"
+  $("brNote").textContent = pdef(cur).resume === "restart"
     ? "深度类任务一旦被打断，重新进入状态成本很高，建议本轮重新开始。"
     : "这类任务被打断不影响大局，原地继续即可。";
-  $("brRestartWrap").style.display = PRESETS[cur].resume === "restart" ? "flex" : "none";
+  $("brRestartWrap").style.display = pdef(cur).resume === "restart" ? "flex" : "none";
 }
 $("btnBreak").onclick = function(){
   if(!running && leftMs === curPlanMs){ toast("还没开始计时"); return; }
@@ -813,13 +902,14 @@ function renderStats(){
   $("kRate").textContent = all.length ? Math.round(full/all.length*100)+"%" : "—";
 
   var box = $("bars"); box.innerHTML = "";
-  var keys = ORDER.filter(function(k){ return (t.byCat[k]||0) > 0; }).sort(function(a,b){ return t.byCat[b]-t.byCat[a]; });
+  // FR-11.5：键取自 byCat 本身而不是 effOrder——已删除自定义类别的历史分钟数也要显示（灰色兜底）
+  var keys = Object.keys(t.byCat).filter(function(k){ return t.byCat[k] > 0; }).sort(function(a,b){ return t.byCat[b]-t.byCat[a]; }).slice(0, 10);   // cap 10：与分享卡片一致，防自导自演的超长列表
   if(!keys.length){ box.innerHTML = '<p class="hint" style="margin:0">今天还没有记录。选个类别，点开始试试。</p>'; }
   var max = Math.max(1, Math.max.apply(null, keys.map(function(k){ return t.byCat[k]; })));
   keys.forEach(function(k){
-    var m = t.byCat[k], p = PRESETS[k];
+    var m = t.byCat[k], p = pdefFb(k);
     var row = document.createElement("div"); row.className = "bar";
-    row.innerHTML = '<span class="t"><i style="background:'+p.color+'"></i>'+p.name+'</span>'+
+    row.innerHTML = '<span class="t"><i style="background:'+p.color+'"></i>'+esc(p.name)+'</span>'+
       '<span class="track"><span class="fill" style="width:'+Math.round(m/max*100)+'%;background:'+p.raw+'"></span></span>'+
       '<span class="n">'+m+'<em> 分</em></span>';
     box.appendChild(row);
@@ -867,8 +957,8 @@ function renderInsights(t){
 
 function suggest(){
   var now = Date.now(), out = [];
-  ORDER.forEach(function(k){
-    if(PRESETS[k].countup) return;
+  effOrder().forEach(function(k){
+    if(pdef(k).countup) return;
     var set = cfg(k).focus;
     if(!set) return;
     var rec = S.sessions.filter(function(s){ return s.cat===k && s.kind!=="countup"; }).slice(-8);
@@ -883,9 +973,8 @@ function suggest(){
     }
   });
   if(!out.length) return "";
-  var nm = {deep:"深度创作",learn:"学习输入",chores:"事务处理",micro:"碎片事务"};
   return out.map(function(o){
-    return "<b>"+(nm[o.k]||o.k)+"</b> 最近 8 个番茄里有一半以上没走完，实际平均只有 <b>"+o.avg+"</b> 分钟（默认 "+o.set+" 分钟），建议调短到 <b>"+o.t+"</b> 分钟";
+    return "<b>"+esc(pdef(o.k).name)+"</b> 最近 8 个番茄里有一半以上没走完，实际平均只有 <b>"+o.avg+"</b> 分钟（默认 "+o.set+" 分钟），建议调短到 <b>"+o.t+"</b> 分钟";
   }).join("；") + "。";
 }
 
@@ -904,6 +993,22 @@ function renderSettings(){
     d.innerHTML = html;
     box.appendChild(d);
   });
+  // FR-11：自定义类别行（结构同内置，多一个删除按钮；时长编辑走同一个 input 处理器，cfg 写回条目本身）
+  S.custom.forEach(function(e){
+    var d = document.createElement("div"); d.className = "setrow";
+    var html = '<h4><i style="background:'+e.color+'"></i>'+esc(e.name)+'<button type="button" class="cdel" data-del="'+e.id+'" title="删除这个类别">删除</button></h4>';
+    html += lbl("专注", e.id, "focus", e.focus) + lbl("短休", e.id, "short", e.short) +
+            lbl("长休", e.id, "long", e.long) + lbl("几轮长休", e.id, "every", e.every);
+    d.innerHTML = html;
+    box.appendChild(d);
+  });
+  box.querySelectorAll(".cdel").forEach(function(btn){
+    btn.onclick = function(){ delCustom(btn.getAttribute("data-del")); };
+  });
+  // 添加表单的上限控制：满了就禁用按钮并提示
+  var full = S.custom.length >= CUSTOM_MAX;
+  $("btnCuAdd").disabled = full;
+  $("cuCount").textContent = S.custom.length + "/" + CUSTOM_MAX + (full ? "（已满）" : "");
   box.querySelectorAll("input[type=number]").forEach(function(inp){
     inp.onchange = function(){
       var k = inp.dataset.cat, f = inp.dataset.f;
@@ -928,6 +1033,50 @@ function renderSettings(){
     return '<label>'+t+'<input type="number" data-cat="'+k+'" data-f="'+f+'" value="'+v+'" min="1" inputmode="numeric"></label>';
   }
 }
+
+/* FR-11.5 删除语义：confirm 确认；历史记录保留（统计/分享卡片走 GONE 灰色兜底）；
+   删的是当前类别 → 回落 deep 并重置阶段，绝不留死引用。 */
+function delCustom(id){
+  var e = customDef(id); if(!e) return;
+  // 审计 P1-2：删除是不可逆操作，进行中的番茄不会入账——必须在确认文案里说清楚
+  if(!confirm("删除「" + e.name + "」？\n· 历史记录会保留，统计显示为（已删除类别）\n· 如果它正在计时，这个番茄不会入账")) return;
+  S.custom = S.custom.filter(function(x){ return x.id !== id; });
+  if(S.nextAction && S.nextAction.cat === id) S.nextAction = null;   // 顺手清掉死引用
+  if(cur === id){
+    cur = "deep"; S.lastCat = "deep";
+    stop(); phase = "focus"; roundIdx = 0; cuts = []; resetPhase();
+  }
+  save(); renderSettings(); renderAll();
+  toast("已删除");
+}
+
+$("btnCuAdd").onclick = function(){
+  if(S.custom.length >= CUSTOM_MAX){ toast("最多 " + CUSTOM_MAX + " 种自定义任务，先删一个再加"); return; }
+  var name = $("cuName").value.trim();
+  if(!name){ toast("先给任务起个名字"); return; }
+  function cv(id, d, lo, hi){
+    var v = parseInt(String($(id).value), 10);
+    return isFinite(v) ? Math.max(lo, Math.min(hi, v)) : d;
+  }
+  // 色板分配：取第一个没被现有自定义占用的颜色，全占用才按序号循环
+  var used = {};
+  S.custom.forEach(function(e){ used[e.color] = 1; });
+  var free = CUSTOM_COLORS.filter(function(c){ return !used[c]; });
+  var color = free.length ? free[0] : CUSTOM_COLORS[S.custom.length % CUSTOM_COLORS.length];
+  S.custom.push({
+    // 时间戳 + 2 位随机后缀，同毫秒双击/双标签页也不撞 id（审计 P2）
+    id: "u" + Date.now().toString(36) + Math.floor(Math.random()*1296).toString(36).padStart(2, "0"),
+    name: [...name].slice(0, 8).join(""),   // 按码点截断，Emoji 不会切出孤立代理对（审计 P2）
+    focus: cv("cuFocus", 25, 1, 600),
+    short: cv("cuShort", 5, 1, 600),
+    long:  cv("cuLong", 15, 1, 600),
+    every: cv("cuEvery", 4, 1, 12),
+    color: color
+  });
+  $("cuName").value = "";
+  save(); renderSettings(); renderCats();
+  toast("已添加「" + [...name].slice(0, 8).join("") + "」，去首页点它开始");
+};
 
 function renderAll(){ renderStats(); renderTip(); renderDots(); renderCats(); }
 
@@ -1029,6 +1178,12 @@ function wrapText(ctx, text, x, y, maxW, lh, maxLines){
   return out;
 }
 
+/* FR-10.4：构建期生成的静态二维码（指向内地可达的 WorkBuddy 公网链接；GitHub Pages 内地访问不稳定，不做扫码入口）。
+   data URI 内嵌，运行时零网络请求，保持单文件零依赖离线可用。 */
+var QR_DATA = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAhIAAAISCAIAAAAWX7HoAAAMt0lEQVR4nO3dUW7jyhFAUTmYbQTe/7KELET5zRcxF3ydrqbO+R7bFGn5ogco1c/n83kBwN/511/+OwCQDQAapw0AAtkAIJANAALZACCQDQAC2QAgkA0AAtkAIJANAALZACCQDQAC2QAgkA0AAtkAIJANAALZACCQDQAC2QAgkA0AAtkAIJANAALZACCQDQAC2QAgkA0AAtkAIJANAALZACCQDQAC2QAgkA0AAtkAIJANAALZACCQDQAC2QAgkA0Agj+vTX5///16lvf7P6/TXD+F61e07mvX3eddr/fOVV1bd59nvhd2/dbN9N70N8dpA4BANgAIZAOAQDYACGQDgEA2AAhkA4BANgAIZAOAE6bET5y4njllOnN6eeZV3fG8CeRdU/HXdv1cf3P+ntMGAIFsABDIBgCBbAAQyAYAgWwAEMgGAIFsABDIBgDnT4lfWzeRu2v29Y4TN37fuaqZr/farmve9Xp3TXqvc+LfnHWcNgAIZAOAQDYACGQDgEA2AAhkA4BANgAIZAOAQDYAePqUOKfvXrbh/O+duKV8nefNn5/IaQOAQDYACGQDgEA2AAhkA4BANgAIZAOAQDYACGQDgMCU+P/Jrq3d1+783F3bldfdyRPnsU/8FIAT7zP/y2kDgEA2AAhkA4BANgAIZAOAQDYACGQDgEA2AAhkA4CnT4k/b2PwnanaXdPa63Y+z3xF19Y9oxOfwp05/5lOvOZ1nDYACGQDgEA2AAhkA4BANgAIZAOAQDYACGQDgEA2ADh/Svx524bvzOteuzPru+5r19m1S3zmbu1dz/fEa75zVfwvpw0AAtkAQDYAWMNpA4BANgAIZAOAQDYACGQDgEA2AAh+Pp9P+ffwD9g167trl/jMTdTrtoWfuA2ev+e0AUAgGwAEsgFAIBsABLIBQCAbAASyAUAgGwAEsgHAd0+Jz5x9nbkheebM7a4d1+uYTv/m39hrM1/RNacNAALZACCQDQAC2QAgkA0AAtkAIJANAALZACCQDQCCP6+RTtwIvWtSdOZM9a7Z13V30s+dcJ+f9xv7e+BUvNMGAIFsABDIBgCBbAAQyAYAgWwAEMgGAIFsABDIBgBP3yU+cy76jpnXPHPiet3T3/V6r+16RXd82yz3tz1fpw0AAtkAIJANAALZACCQDQAC2QAgkA0AAtkAIJANAE7YJX7itPbzXtH1Nc/c6D7za5+3K/7E6eU7dn2CwO/IvxvXnDYACGQDgEA2AAhkA4BANgAIZAOAQDYACGQDgEA2ADhhSnzXjPGued073/na87Znf5sTd8XfMfN3cte8/YnvMqcNAALZACCQDQAC2QAgkA0AAtkAIJANAALZACCQDQCCn8/n89ph5vTjtZnbs2fOvX+bE/eun7hLfOZm9TtOfA86bQAQyAYAgWwAEMgGAIFsABDIBgCBbAAQyAYAgWwAcMIu8XXWTU3PnMg9cfZ1nW+b5l03y73rCc78/Ih1d/I9cg78mtMGAIFsABDIBgCBbAAQyAYAgWwAEMgGAIFsABDIBgBPnxKfuTF45gz5ia9o11XN/M537tXMd8qd7zzz0wd+b1zViTPkThsABLIBQCAbAASyAUAgGwAEsgFAIBsABLIBQCAbAAQ/n8/nNc/M+dVdm5ln7os+8T7vmrmd+YpmXtUuu17R78j34DWnDQAC2QAgkA0AAtkAIJANAALZACCQDQAC2QAgkA0ATpgS37UT+Nsmn3fNkM/cJT7z+d75zjN92+/VHSdO4zttABDIBgCBbAAQyAYAgWwAEMgGAIFsABDIBgCBbAAQ/Hlt8m1z0SdOAq+7VzPv852ZWzvbJ9yrdU7cjr6O0wYAgWwAEMgGAIFsABDIBgCBbAAQyAYAgWwAEMgGACfsEr+2a9J73S7iXVusdznxTs606xMT7vi2zervkU9hHacNAALZACCQDQAC2QAgkA0AAtkAIJANAALZACCQDQBOmBL/tm3h13ZNis58CqaI/6m7ccfM2eaZ799vmyF32gAgkA0AAtkAIJANAALZACCQDQAC2QAgkA0AAtkAIPjzGmnXLOiJG793TZmum8Zfd69OfL67fjdOnNWfuR3998A58GtOGwAEsgFAIBsABLIBQCAbAASyAUAgGwAEsgFAIBsAnDAlfuK28F0bsO9M88685nXWTae7V6d73ucpvDe9y5w2AAhkA4BANgAIZAOAQDYACGQDgEA2AAhkA4BANgA4f5f4rjnwa7vmSK/NnKg/8ZpPfL53zNyAfeLz/R25SX4dpw0AAtkAIJANAALZACCQDQAC2QAgkA0AAtkAIJANAIKfz+fz2uF5M6i7nDhTPXNKfJ1189gz78bMqfh13pveC7s4bQAQyAYAgWwAEMgGAIFsABDIBgCBbAAQyAYAgWwAcMIu8ZlzszOnW3ftfL7zitZd1cyp+Jn77Wf+bqwzc6b6d+S9usNpA4BANgAIZAOAQDYACGQDgEA2AAhkA4BANgAIZAOAE6bEZ07VXnveBPLMPcbr5vy/bYO9fe//lF2fPTGT0wYAgWwAEMgGAIFsABDIBgCBbAAQyAYAgWwAEMgGACdMiV9bt2t65iz3iXPgz5uZf97rfd77aObE9Xvkfvt1nDYACGQDgEA2AAhkA4BANgAIZAOAQDYACGQDgEA2ADh/SvzOpOi6r11n19zsiZPPd8ycMb5j5v7zmU9/1/voPfJu3OG0AUAgGwAEsgFAIBsABLIBQCAbAASyAUAgGwAEsgHACVPidyYnZ84Yr5tB/bbdy3fsegp37HqCJ84237nmXTvbfw+cA7/mtAFAIBsABLIBQCAbAASyAUAgGwAEsgFAIBsABLIBQPDz+XxeO+zaYn1t16TozFnuE5/RzM3qd5z4iky2/3/s+rvhtAFAIBsABLIBQCAbAASyAUAgGwAEsgFAIBsABLIBwAlT4s+bbp25EfqOmbPr6+zarb3r8wVmfud1d/J5m9XfpsQBmM9/UgEQyAYAgWwAEMgGAIFsABDIBgCBbAAQyAYAwZ/XgU6cuN71c0+8Vyde866rmjnpve47r7tX67xHTpjf4bQBQCAbAASyAUAgGwAEsgFAIBsABLIBQCAbAASyAcDTp8TXTZmum33dtSH5xEnvXVc1c173zjXP3On9vPt8beZ7/w6nDQAC2QAgkA0AAtkAIJANAALZACCQDQAC2QAgkA0Azp8SnzkbOXOm+tquOeET5/zXfe3MLdZ3vvZ5m8avzZyof2/6O+m0AUAgGwAEsgFAIBsABLIBQCAbAASyAUAgGwAEsgHA+VPi37Zt+I51W453zaDu2tv8vDnhEyeur534in5H/jW7w2kDgEA2AAhkA4BANgAIZAOAQDYACGQDgEA2AAhkA4Dg5/P5vHbYtYv4xGnPEzerz7yTJzpxDvzbvEf+vVrHaQOAQDYACGQDgEA2AAhkA4BANgAIZAOAQDYACGQDgBOmxL/NzKn4a8/bzLxuqnbXtPbMOfDnTU3vev++R35ChNMGAIFsABDIBgCBbAAQyAYAgWwAEMgGAIFsABDIBgDBn9cmz9tjvGtS9Hmz3Lt+N3bN6878jIBddv1enThhvovTBgCBbAAQyAYAgWwAEMgGAIFsABDIBgCBbAAQyAYAJ0yJX5s5Oblr5/PM7cp3fu6uzdsz79Wu5/tt+7F3zYHfMfNOOm0AEMgGAIFsABDIBgCBbAAQyAYAgWwAEMgGAIFsAHD+lPi1E+eEZ04Cr/u5M83cUj7z6e/6TIQ7Zm5Wf2+6G+s4bQAQyAYAgWwAEMgGAIFsABDIBgCBbAAQyAYAgWwA8PQp8edZN0e6bof5umve9SkAM/c2X5t5zd/22QS/N95HJ3LaACCQDQBkA4A1nDYACGQDgEA2AAhkA4BANgAIZAOAwJT4w+fA133trtn1dVPEM5/RzP3n169o5u/VHSduVl/HaQOAQDYACGQDgEA2AAhkA4BANgAIZAOAQDYACGQDgKdPiZ+4bfjE6dZrJ+6pPvEZ7doGf23mbPPMT1v4HXmv7nDaACCQDQAC2QAgkA0AAtkAIJANAALZACCQDQAC2QAg+Pl8Pq8dnjc5uW7m9ttmyNdNTV878Tvf+bl3zNz4fW3XzPz7cZ9q4bQBQCAbAASyAUAgGwAEsgFAIBsABLIBQCAbAASyAcAJU+IAnMhpA4BANgAIZAOAQDYACGQDgEA2AAhkA4BANgAIZAOAQDYACGQDgEA2AAhkA4BANgAIZAOAQDYACGQDgEA2AAhkA4BANgAIZAOAQDYACGQDgEA2AAhkA4BANgAIZAOAQDYACGQDgEA2AAhkA4BANgAIZAOAQDYACGQDgEA2AAhkA4BANgAIZAOA19/7L6xaUeUoAN8wAAAAAElFTkSuQmCC";
+var qrImg = new Image();
+qrImg.src = QR_DATA;
+
 function drawCard(){
   var cv = $("shareCard"), ctx = cv.getContext("2d");
   var t = aggDay(Date.now());
@@ -1036,18 +1191,23 @@ function drawCard(){
 
   /* ---- FR-7.4：先把「有多少行」算出来，再定画布高度 ----
      旧版画布固定 900 高、白卡钉死在底部，类别一多（4~5 行）条形图就被白卡盖住。
-     现在改为：条数决定画布高度，白卡永远画在最后一条下面，绝不重叠。 */
-  var keys = ORDER.filter(function(k){ return (t.byCat[k]||0)>0; })
-                  .sort(function(a,b){ return t.byCat[b]-t.byCat[a]; });
-  var rows = Math.min(keys.length, ORDER.length);
+     现在改为：条数决定画布高度，白卡永远画在最后一条下面，绝不重叠。
+     FR-11.5：键取自 byCat 本身（含自定义与已删除类别），最多画 10 行防爆高。 */
+  var keys = Object.keys(t.byCat).filter(function(k){ return t.byCat[k] > 0; })
+                  .sort(function(a,b){ return t.byCat[b]-t.byCat[a]; })
+                  .slice(0, 10);
+  var rows = keys.length;
 
   var W = 700, P = 60;
   var ROW_H = 58, BOX_H = 120, BOX_GAP = 20;
   var barsTop = P + 120 + 250 + 34 + 40;          // 条形区第一行文字的 y
   var barsEnd = barsTop + (rows ? rows*ROW_H : 40);
   var boxY = barsEnd + BOX_GAP;
-  // 110 = 白卡下沿 → 页脚 28px + 页脚文字 12px + 底部留白 70px
-  var H = Math.max(780, boxY + BOX_H + 110);
+  /* FR-10.3：QR 区（间距 20 + 图 120）插入白卡与页脚之间；
+     110 = QR 区下沿 → 页脚 28px + 页脚文字 12px + 底部留白 70px */
+  var QR_H = 120, QR_GAP = 20;
+  var qrY = boxY + BOX_H + QR_GAP;
+  var H = Math.max(920, boxY + BOX_H + QR_GAP + QR_H + 110);
 
   cv.width = W; cv.height = H;                    // 改尺寸会重置 2d 上下文，必须放在所有绘制之前
   ctx.fillStyle = "#faf9f5"; ctx.fillRect(0,0,W,H);
@@ -1091,14 +1251,14 @@ function drawCard(){
     y += 40;
     var max = Math.max.apply(null, keys.map(function(k){ return t.byCat[k]; }));
     keys.forEach(function(k){
-      var m = t.byCat[k];
+      var m = t.byCat[k], p = pdefFb(k);
       ctx.font = "400 15px system-ui,sans-serif";
       ctx.fillStyle = "#6d6c66";
-      ctx.fillText(PRESETS[k].name, P, y);
+      ctx.fillText(p.name, P, y);
       var bw = W - P*2;
       ctx.fillStyle = "#ebeae4";
       ctx.fillRect(P, y+26, bw, 10);
-      ctx.fillStyle = PRESETS[k].raw;
+      ctx.fillStyle = p.raw;
       ctx.fillRect(P, y+26, Math.max(10, bw*(m/max)), 10);
       ctx.fillStyle = "#1e1e1c";
       ctx.font = "500 15px system-ui,sans-serif";
@@ -1129,6 +1289,21 @@ function drawCard(){
   if(txt.length > 160) txt = txt.slice(0,160) + "…";
   // 白卡内可用高度 = BOX_H - 52 - 16 = 52px，行高 28 → 最多 2 行
   wrapText(ctx, txt, P+24, boxY+52, W-P*2-48, 28, 2);
+
+  /* FR-10：项目二维码，看到卡片的人扫码即用。
+     QR 图在页面加载时已预加载；万一还没解码完，onload 里重绘一次（drawCard 幂等），
+     保证任何时刻导出的卡片都不缺码。 */
+  if(qrImg.complete && qrImg.naturalWidth > 0){
+    ctx.drawImage(qrImg, P, qrY, QR_H, QR_H);
+  } else {
+    qrImg.onload = function(){ qrImg.onload = null; drawCard(); };
+  }
+  ctx.fillStyle = "#1e1e1c";
+  ctx.font = "500 20px system-ui,'PingFang SC','Microsoft YaHei',sans-serif";
+  ctx.fillText("扫码免费使用同款", P+QR_H+24, qrY+34);
+  ctx.fillStyle = "#9d9c95";
+  ctx.font = "400 14px system-ui,sans-serif";
+  ctx.fillText("长按识别二维码 · 数据只存在你的浏览器里", P+QR_H+24, qrY+66);
 
   ctx.fillStyle = "#9d9c95";
   ctx.font = "400 12px system-ui,sans-serif";
